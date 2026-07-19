@@ -25,6 +25,7 @@ import trimesh
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import StreamingResponse
 import uuid
 
 from hy3dgen.shapegen.utils import logger
@@ -723,12 +724,17 @@ if __name__ == '__main__':
     from hy3dgen.rembg import BackgroundRemover
 
     rmbg_worker = BackgroundRemover()
+    shape_cpu_offload = args.low_vram_mode and str(args.device).startswith('cuda')
+    shape_load_device = 'cpu' if shape_cpu_offload else args.device
     i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
         args.model_path,
         subfolder=args.subfolder,
         use_safetensors=True,
-        device=args.device,
+        device=shape_load_device,
     )
+    if shape_cpu_offload:
+        print('Low VRAM mode: enabling shape model CPU offload to', args.device)
+        i23d_worker.enable_model_cpu_offload(device=args.device)
     if args.enable_flashvdm:
         mc_algo = 'mc' if args.device in ['cpu', 'mps'] else args.mc_algo
         i23d_worker.enable_flashvdm(mc_algo=mc_algo)
@@ -742,6 +748,20 @@ if __name__ == '__main__':
     # https://discuss.huggingface.co/t/how-to-serve-an-html-file/33921/2
     # create a FastAPI app
     app = FastAPI()
+
+    @app.middleware("http")
+    async def ignore_undefined_upload_progress(request, call_next):
+        """Finish Gradio's spurious progress request without logging a 404."""
+        if (
+            request.url.path == "/gradio_api/upload_progress"
+            and request.query_params.get("upload_id") == "undefined"
+        ):
+            async def upload_complete():
+                yield 'data: {"msg": "done"}\n\n'
+
+            return StreamingResponse(upload_complete(), media_type="text/event-stream")
+        return await call_next(request)
+
     # create a static directory to store the static files
     static_dir = Path(SAVE_DIR).absolute()
     static_dir.mkdir(parents=True, exist_ok=True)

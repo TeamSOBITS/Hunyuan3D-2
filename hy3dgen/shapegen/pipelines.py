@@ -255,6 +255,17 @@ class Hunyuan3DDiTPipeline:
         self.model = torch.compile(self.model)
         self.conditioner = torch.compile(self.conditioner)
 
+    @property
+    def components(self):
+        """Components used by Accelerate CPU-offload hooks."""
+        return {
+            'conditioner': self.conditioner,
+            'model': self.model,
+            'vae': self.vae,
+            'image_processor': self.image_processor,
+            'scheduler': self.scheduler,
+        }
+
     def enable_flashvdm(
         self,
         enabled: bool = True,
@@ -574,7 +585,9 @@ class Hunyuan3DDiTPipeline:
 
         self.set_surface_extractor(mc_algo)
 
-        device = self.device
+        # CPU offload keeps model weights on CPU between calls while execution
+        # still happens on the accelerator selected by the Accelerate hooks.
+        device = self._execution_device
         dtype = self.dtype
         do_classifier_free_guidance = guidance_scale >= 0 and \
                                       getattr(self.model, 'guidance_cond_proj_dim', None) is None
@@ -703,7 +716,9 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
 
         self.set_surface_extractor(mc_algo)
 
-        device = self.device
+        # CPU offload keeps model weights on CPU between calls while execution
+        # still happens on the accelerator selected by the Accelerate hooks.
+        device = self._execution_device
         dtype = self.dtype
         do_classifier_free_guidance = guidance_scale >= 0 and not (
             hasattr(self.model, 'guidance_embed') and
